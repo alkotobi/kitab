@@ -1,6 +1,7 @@
 #include "jamharah/index_format.h"
 #include "jamharah/normalize_arabic.h"
 #include "jamharah/tokenize_arabic.h"
+#include "jamharah/hash.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -369,6 +370,29 @@ static int test_tokenize_arabic_page_from_sqlite(void) {
     return 0;
 }
 
+static int test_hash_utf8_basic(void) {
+    const char *s1 = "abc";
+    const char *s2 = "abd";
+    const char *s3 = "بسم";
+    uint64_t h1 = jh_hash_utf8_64(s1, strlen(s1), 0);
+    uint64_t h2 = jh_hash_utf8_64(s2, strlen(s2), 0);
+    uint64_t h3 = jh_hash_utf8_64(s1, strlen(s1), 1);
+    uint64_t h4 = jh_hash_utf8_64(s3, strlen(s3), 0);
+    if (h1 == 0 || h2 == 0 || h3 == 0 || h4 == 0) {
+        fprintf(stderr, "hash returned zero\n");
+        return 1;
+    }
+    if (h1 == h2) {
+        fprintf(stderr, "hash collision between abc and abd\n");
+        return 1;
+    }
+    if (h1 == h3) {
+        fprintf(stderr, "hash seed did not change value\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* main runs all index_format tests and returns non-zero on failure. */
 int main(void) {
     if (test_postings_cursor_basic() != 0) {
@@ -390,6 +414,9 @@ int main(void) {
         return 1;
     }
     if (test_tokenize_arabic_page_from_sqlite() != 0) {
+        return 1;
+    }
+    if (test_hash_utf8_basic() != 0) {
         return 1;
     }
     return 0;

@@ -6,8 +6,12 @@
 #include <stddef.h>
  
 typedef uint8_t jh_u8;
+typedef uint16_t jh_u16;
 typedef uint32_t jh_u32;
 typedef uint64_t jh_u64;
+
+#define JH_ANNO_MAGIC "ANNO"
+#define JH_ANNO_VERSION 1
  
 #pragma pack(push,1)
  
@@ -134,6 +138,12 @@ typedef struct {
     jh_u32 flags;
 } jh_word_index_entry;
 
+typedef struct {
+    jh_u64 word_hash;
+    jh_u32 page_id;
+    jh_u32 position;
+} jh_occurrence_record;
+
 /* jh_postings_file_header is the header for the postings data file postings.bin. */
 typedef struct {
     char magic[4];
@@ -156,6 +166,73 @@ typedef struct {
     jh_u64 compressed_size;
 } jh_postings_block_index_entry;
 
+typedef struct {
+    char magic[4];
+    jh_u32 version;
+    jh_u32 reserved;
+    jh_u64 entry_count;
+} jh_word_dict_header;
+
+typedef struct {
+    jh_u64 word_hash;
+    jh_u64 postings_offset;
+    jh_u64 postings_count;
+} jh_word_dict_entry;
+
+typedef struct {
+    char magic[4];
+    jh_u32 version;
+    jh_u64 corpus_version;
+    jh_u64 comments_count;
+    jh_u64 formatting_count;
+    jh_u64 highlights_count;
+    jh_u64 comments_offset;
+    jh_u64 formatting_offset;
+    jh_u64 highlights_offset;
+    jh_u64 reserved[4];
+} jh_anno_header;
+
+typedef struct {
+    jh_u32 page_id;
+    jh_u32 anchor_start;
+    jh_u32 anchor_end;
+    jh_u16 flags;
+    jh_u16 kind;
+    jh_u32 author_id;
+    jh_u64 created_at_unix;
+    jh_u64 updated_at_unix;
+    jh_u64 text_offset;
+    jh_u32 text_length;
+    jh_u32 reserved;
+} jh_anno_comment_disk;
+
+typedef struct {
+    jh_u32 page_id;
+    jh_u32 anchor_start;
+    jh_u32 anchor_end;
+    jh_u16 flags;
+    jh_u16 style_id;
+    jh_u16 layer;
+    jh_u16 priority;
+    jh_u32 reserved;
+} jh_anno_formatting_disk;
+
+typedef struct {
+    jh_u32 page_id;
+    jh_u32 anchor_start;
+    jh_u32 anchor_end;
+    jh_u16 flags;
+    jh_u16 color_id;
+    jh_u16 category_id;
+    jh_u16 reserved16;
+    jh_u32 author_id;
+    jh_u64 created_at_unix;
+    jh_u64 updated_at_unix;
+    jh_u64 comment_ref_offset;
+} jh_anno_highlight_disk;
+
+int jh_word_dict_lookup(const char *path, jh_u64 word_hash, jh_word_dict_entry *out);
+
 #pragma pack(pop)
  
 /* jh_read_* helpers load and validate file headers from disk by magic tag. */
@@ -166,6 +243,7 @@ int jh_read_chapters_index_header(const char *path, jh_chapters_index_header *ou
 int jh_read_titles_file_header(const char *path, jh_titles_file_header *out);
 int jh_read_words_index_header(const char *path, jh_words_index_header *out);
 int jh_read_postings_file_header(const char *path, jh_postings_file_header *out);
+int jh_load_page_text(const char *books_path, const char *pages_idx_path, jh_u32 page_id, char **out_text, jh_u32 *out_len);
  
 /* jh_posting_entry holds a single document id and its term positions. */
 typedef struct {
@@ -182,10 +260,16 @@ typedef struct {
     jh_u32 positions_count;
 } jh_postings_list;
 
+typedef struct {
+    jh_u32 page_id;
+    double score;
+} jh_ranked_hit;
+
 /* jh_postings_list_parse decodes an encoded postings buffer into an in-memory list. */
 int jh_postings_list_parse(const jh_u8 *data, size_t data_size, jh_postings_list *out);
-/* jh_postings_list_free releases heap memory associated with a postings list. */
 void jh_postings_list_free(jh_postings_list *list);
+int jh_postings_list_read(const char *path, jh_u64 offset, jh_postings_list *out);
+int jh_postings_block_read(const char *path, jh_u64 offset, jh_u8 **out_buf, size_t *out_size);
  
 /* jh_postings_list_intersect computes document-level AND between two postings lists. */
 int jh_postings_list_intersect(const jh_postings_list *a, const jh_postings_list *b, jh_postings_list *out);
@@ -261,5 +345,24 @@ typedef struct {
 int jh_postings_phrase_and_cursor_init(jh_postings_phrase_and_cursor *pc, jh_postings_cursor *a, jh_postings_cursor *b, jh_u32 *buf_a, jh_u32 cap_a, jh_u32 *buf_b, jh_u32 cap_b);
 /* jh_postings_phrase_and_cursor_next returns docs where term B follows term A by one. */
 int jh_postings_phrase_and_cursor_next(jh_postings_phrase_and_cursor *pc, jh_posting_entry *out);
+
+int jh_phrase_search(const char *words_idx_path, const char *postings_path, const jh_u64 *hashes, size_t hash_count, jh_u32 **out_pages, size_t *out_page_count);
+int jh_phrase_search_multi(const char **words_idx_paths, const char **postings_paths, size_t cat_count, const jh_u64 *hashes, size_t hash_count, jh_u32 **out_pages, jh_u32 **out_categories, size_t *out_count);
+int jh_rank_results(const jh_postings_list *lists, size_t list_count, const jh_u32 *phrase_pages, size_t phrase_page_count, jh_ranked_hit **out_hits, size_t *out_hit_count);
+
+typedef struct {
+    const jh_u8 *data;
+    size_t size;
+    jh_anno_header header;
+    const jh_anno_comment_disk *comments;
+    const jh_anno_formatting_disk *formatting;
+    const jh_anno_highlight_disk *highlights;
+} jh_anno_file_view;
+
+int jh_anno_open(const char *path, jh_anno_file_view *out);
+void jh_anno_close(jh_anno_file_view *view);
+void jh_anno_find_comments_for_page(const jh_anno_file_view *view, jh_u32 page_id, size_t *first_index, size_t *count);
+void jh_anno_find_formatting_for_page(const jh_anno_file_view *view, jh_u32 page_id, size_t *first_index, size_t *count);
+void jh_anno_find_highlights_for_page(const jh_anno_file_view *view, jh_u32 page_id, size_t *first_index, size_t *count);
  
 #endif

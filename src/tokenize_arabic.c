@@ -239,8 +239,16 @@ size_t jh_normalize_and_tokenize_arabic_utf8(const char *text, size_t text_len,
             tokens[token_count].position = pos;
             in_token = 1;
         }
-        if (!jh_utf8_encode_tok(cp, workspace, workspace_cap, &out_len)) {
-            return (size_t)-1;
+        if (cp < 0x80) {
+            if (out_len + 1 > workspace_cap) {
+                return (size_t)-1;
+            }
+            workspace[out_len] = (char)cp;
+            out_len += 1;
+        } else {
+            if (!jh_utf8_encode_tok(cp, workspace, workspace_cap, &out_len)) {
+                return (size_t)-1;
+            }
         }
     }
     if (in_token) {

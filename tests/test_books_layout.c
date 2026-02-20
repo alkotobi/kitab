@@ -36,6 +36,7 @@ static void run_exporter(const char *books_subdir) {
         fprintf(stderr, "[books_layout] build_from_sqlite returned %d\n", rc);
         die("exporter failed");
     }
+    printf("[books_layout] build_from_sqlite completed successfully\n");
 }
 
 static void check_books_header(const char *path, jh_books_file_header *hdr_out) {
@@ -60,6 +61,7 @@ static void check_books_header(const char *path, jh_books_file_header *hdr_out) 
            (unsigned)hdr.block_size,
            (unsigned long long)hdr.block_count);
     *hdr_out = hdr;
+    printf("[books_layout] check_books_header passed\n");
 }
 
 static void check_books_index(const char *path) {
@@ -114,6 +116,7 @@ static void check_books_index(const char *path) {
     }
 
     free(entries);
+    printf("[books_layout] check_books_index passed\n");
 }
 
 static void check_pages_index(const char *path, const jh_books_file_header *books_hdr) {
@@ -201,6 +204,7 @@ static void check_pages_index(const char *path, const jh_books_file_header *book
 
     free(entries);
     free(blocks);
+    printf("[books_layout] check_pages_index passed\n");
 }
 
 static void check_chapters_index(const char *path) {
@@ -254,6 +258,7 @@ static void check_chapters_index(const char *path) {
     }
 
     free(entries);
+    printf("[books_layout] check_chapters_index passed\n");
 }
 
 static void check_titles_bin(const char *path) {
@@ -327,6 +332,192 @@ static void check_titles_bin(const char *path) {
 
     free(entries);
     fclose(f);
+    printf("[books_layout] check_titles_bin passed\n");
+}
+
+static void run_occurrence_tools(void) {
+    char cmd[256];
+    int rc;
+    snprintf(cmd, sizeof(cmd), "../build_occurrences");
+    rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "[books_layout] build_occurrences returned %d\n", rc);
+        die("build_occurrences failed");
+    }
+    printf("[books_layout] build_occurrences completed successfully\n");
+    snprintf(cmd, sizeof(cmd), "../sort_occurrences");
+    rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "[books_layout] sort_occurrences returned %d\n", rc);
+        die("sort_occurrences failed");
+    }
+    printf("[books_layout] sort_occurrences completed successfully\n");
+    snprintf(cmd, sizeof(cmd), "../build_postings");
+    rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "[books_layout] build_postings returned %d\n", rc);
+        die("build_postings failed");
+    }
+    printf("[books_layout] build_postings completed successfully\n");
+    snprintf(cmd, sizeof(cmd), "../build_words_index");
+    rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "[books_layout] build_words_index returned %d\n", rc);
+        die("build_words_index failed");
+    }
+    printf("[books_layout] build_words_index completed successfully\n");
+}
+
+static void check_occurrences_sorted(const char *pages_idx_path, const char *occ_path) {
+    jh_pages_index_header ph;
+    FILE *pf;
+    FILE *of;
+    jh_occurrence_record prev;
+    jh_occurrence_record cur;
+    int have_prev = 0;
+    if (jh_read_pages_index_header(pages_idx_path, &ph) != 0) {
+        die("jh_read_pages_index_header failed in check_occurrences_sorted");
+    }
+    pf = fopen(pages_idx_path, "rb");
+    if (!pf) {
+        die("open pages.idx failed in check_occurrences_sorted");
+    }
+    fclose(pf);
+    of = fopen(occ_path, "rb");
+    if (!of) {
+        die("open occurrences file failed");
+    }
+    for (;;) {
+        size_t n = fread(&cur, sizeof(jh_occurrence_record), 1, of);
+        if (n == 0) {
+            break;
+        }
+        if (cur.page_id >= ph.page_count) {
+            fclose(of);
+            die("occurrence page_id out of range");
+        }
+        if (have_prev) {
+            if (prev.word_hash > cur.word_hash) {
+                fclose(of);
+                die("occurrences not sorted by word_hash");
+            }
+            if (prev.word_hash == cur.word_hash && prev.page_id > cur.page_id) {
+                fclose(of);
+                die("occurrences not sorted by page_id");
+            }
+            if (prev.word_hash == cur.word_hash && prev.page_id == cur.page_id && prev.position > cur.position) {
+                fclose(of);
+                die("occurrences not sorted by position");
+            }
+        }
+        prev = cur;
+        have_prev = 1;
+    }
+    fclose(of);
+    printf("[books_layout] occurrences sorted check passed\n");
+}
+
+static void check_postings_bin(const char *occ_path, const char *postings_path) {
+    jh_postings_file_header hdr;
+    FILE *f;
+    jh_occurrence_record rec;
+    jh_u64 count = 0;
+    if (jh_read_postings_file_header(postings_path, &hdr) != 0) {
+        die("jh_read_postings_file_header failed");
+    }
+    if (memcmp(hdr.magic, "PSTB", 4) != 0) {
+        die("postings.bin magic mismatch");
+    }
+    if (hdr.version != 1) {
+        die("postings.bin version mismatch");
+    }
+    f = fopen(occ_path, "rb");
+    if (!f) {
+        die("open occurrences.sorted.tmp failed");
+    }
+    for (;;) {
+        size_t n = fread(&rec, sizeof(jh_occurrence_record), 1, f);
+        if (n == 0) {
+            break;
+        }
+        count += 1;
+    }
+    fclose(f);
+    if (hdr.total_postings != count) {
+        die("postings.bin total_postings mismatch");
+    }
+    printf("[books_layout] postings.bin header and counts check passed\n");
+}
+
+static void check_words_index(const char *occ_path, const char *dict_path) {
+    jh_word_dict_header wh;
+    FILE *df;
+    FILE *of;
+    jh_word_dict_entry prev;
+    jh_word_dict_entry cur;
+    int have_prev = 0;
+    jh_occurrence_record occ;
+    jh_u64 distinct_words = 0;
+    jh_u64 prev_hash = 0;
+
+    df = fopen(dict_path, "rb");
+    if (!df) {
+        die("open words.idx failed");
+    }
+    if (fread(&wh, 1, sizeof(wh), df) != sizeof(wh)) {
+        fclose(df);
+        die("read words.idx header failed");
+    }
+    if (memcmp(wh.magic, "WDIX", 4) != 0) {
+        fclose(df);
+        die("words.idx magic mismatch");
+    }
+    if (wh.version != 1) {
+        fclose(df);
+        die("words.idx version mismatch");
+    }
+
+    while (1) {
+        size_t n = fread(&cur, 1, sizeof(cur), df);
+        if (n == 0) {
+            break;
+        }
+        if (n != sizeof(cur)) {
+            fclose(df);
+            die("partial words.idx entry read");
+        }
+        if (have_prev) {
+            if (prev.word_hash > cur.word_hash) {
+                fclose(df);
+                die("words.idx not sorted by word_hash");
+            }
+        }
+        prev = cur;
+        have_prev = 1;
+    }
+    fclose(df);
+
+    of = fopen(occ_path, "rb");
+    if (!of) {
+        die("open occurrences.sorted.tmp failed in check_words_index");
+    }
+    while (1) {
+        size_t n = fread(&occ, sizeof(jh_occurrence_record), 1, of);
+        if (n == 0) {
+            break;
+        }
+        if (!distinct_words || occ.word_hash != prev_hash) {
+            distinct_words += 1;
+            prev_hash = occ.word_hash;
+        }
+    }
+    fclose(of);
+
+    if (wh.entry_count != distinct_words) {
+        die("words.idx entry_count mismatch");
+    }
+
+    printf("[books_layout] words.idx header and sorting check passed\n");
 }
 
 int main(void) {
@@ -355,6 +546,13 @@ int main(void) {
     check_chapters_index("chapters.idx");
     printf("[books_layout] Checking titles.bin\n");
     check_titles_bin("titles.bin");
+    printf("[books_layout] Building and checking occurrences\n");
+    run_occurrence_tools();
+    check_occurrences_sorted("pages.idx", "occurrences.sorted.tmp");
+    printf("[books_layout] Checking postings.bin\n");
+    check_postings_bin("occurrences.sorted.tmp", "postings.bin");
+    printf("[books_layout] Checking words.idx\n");
+    check_words_index("occurrences.sorted.tmp", "words.idx");
 
     printf("[books_layout] All real-books checks passed\n");
     return 0;
