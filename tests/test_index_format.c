@@ -393,6 +393,177 @@ static int test_hash_utf8_basic(void) {
     return 0;
 }
 
+static int test_word_dict_lookup_basic(void) {
+    const char *path = "test_words.idx";
+    jh_word_dict_header hdr;
+    jh_word_dict_entry entries[3];
+    FILE *f;
+    jh_word_dict_entry out;
+    int rc;
+    uint64_t h1 = 10;
+    uint64_t h2 = 20;
+    uint64_t h3 = 30;
+
+    memcpy(hdr.magic, "WDIX", 4);
+    hdr.version = 1;
+    hdr.reserved = 0;
+    hdr.entry_count = 3;
+
+    entries[0].word_hash = h1;
+    entries[0].postings_offset = 100;
+    entries[0].postings_count = 5;
+    entries[1].word_hash = h2;
+    entries[1].postings_offset = 200;
+    entries[1].postings_count = 7;
+    entries[2].word_hash = h3;
+    entries[2].postings_offset = 300;
+    entries[2].postings_count = 9;
+
+    f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "failed to create %s\n", path);
+        return 1;
+    }
+    if (fwrite(&hdr, 1, sizeof(hdr), f) != sizeof(hdr)) {
+        fclose(f);
+        fprintf(stderr, "write header failed\n");
+        return 1;
+    }
+    if (fwrite(entries, 1, sizeof(entries), f) != sizeof(entries)) {
+        fclose(f);
+        fprintf(stderr, "write entries failed\n");
+        return 1;
+    }
+    fclose(f);
+
+    rc = jh_word_dict_lookup(path, h2, &out);
+    if (rc != 0) {
+        fprintf(stderr, "lookup existing h2 rc=%d\n", rc);
+        return 1;
+    }
+    if (out.word_hash != h2 || out.postings_offset != entries[1].postings_offset || out.postings_count != entries[1].postings_count) {
+        fprintf(stderr, "lookup h2 entry mismatch\n");
+        return 1;
+    }
+
+    rc = jh_word_dict_lookup(path, h2, &out);
+    if (rc != 0) {
+        fprintf(stderr, "lookup existing h2 second rc=%d\n", rc);
+        return 1;
+    }
+
+    rc = jh_word_dict_lookup(path, 99, &out);
+    if (rc != 1) {
+        fprintf(stderr, "lookup missing rc=%d expected 1\n", rc);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int test_rank_results_basic(void) {
+    jh_postings_list lists[2];
+    jh_postings_list a;
+    jh_postings_list b;
+    jh_ranked_hit *hits = NULL;
+    size_t hit_count = 0;
+    jh_u32 phrase_pages[1];
+    int rc;
+    jh_u32 pages_a[] = { 1, 2, 3 };
+    jh_u32 tf_a[] = { 3, 1, 1 };
+    jh_u32 pos_a[] = { 1, 2, 3, 5, 7 };
+    jh_u32 pages_b[] = { 2, 3 };
+    jh_u32 tf_b[] = { 1, 2 };
+    jh_u32 pos_b[] = { 4, 10, 11 };
+    jh_u32 i;
+
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+
+    a.entry_count = 3;
+    a.entries = (jh_posting_entry *)calloc(a.entry_count, sizeof(jh_posting_entry));
+    a.positions_storage = (jh_u32 *)malloc(sizeof(pos_a));
+    if (!a.entries || !a.positions_storage) {
+        fprintf(stderr, "alloc a failed\n");
+        return 1;
+    }
+    memcpy(a.positions_storage, pos_a, sizeof(pos_a));
+    a.positions_count = (jh_u32)(sizeof(pos_a) / sizeof(pos_a[0]));
+    {
+        jh_u32 offset = 0;
+        for (i = 0; i < a.entry_count; ++i) {
+            a.entries[i].page_id = pages_a[i];
+            a.entries[i].term_freq = tf_a[i];
+            a.entries[i].positions = a.positions_storage + offset;
+            offset += tf_a[i];
+        }
+    }
+
+    b.entry_count = 2;
+    b.entries = (jh_posting_entry *)calloc(b.entry_count, sizeof(jh_posting_entry));
+    b.positions_storage = (jh_u32 *)malloc(sizeof(pos_b));
+    if (!b.entries || !b.positions_storage) {
+        fprintf(stderr, "alloc b failed\n");
+        return 1;
+    }
+    memcpy(b.positions_storage, pos_b, sizeof(pos_b));
+    b.positions_count = (jh_u32)(sizeof(pos_b) / sizeof(pos_b[0]));
+    {
+        jh_u32 offset = 0;
+        for (i = 0; i < b.entry_count; ++i) {
+            b.entries[i].page_id = pages_b[i];
+            b.entries[i].term_freq = tf_b[i];
+            b.entries[i].positions = b.positions_storage + offset;
+            offset += tf_b[i];
+        }
+    }
+
+    lists[0] = a;
+    lists[1] = b;
+    phrase_pages[0] = 3;
+
+    rc = jh_rank_results(lists, 2, 1, phrase_pages, 1, &hits, &hit_count);
+    if (rc != 0) {
+        fprintf(stderr, "rank_results AND rc=%d\n", rc);
+        return 1;
+    }
+    if (hit_count != 2) {
+        fprintf(stderr, "rank_results AND hit_count=%zu expected 2\n", hit_count);
+        free(hits);
+        return 1;
+    }
+    if (hits[0].page_id != 3 || hits[1].page_id != 2) {
+        fprintf(stderr, "rank_results AND page_ids=%u,%u expected 3,2\n",
+                (unsigned)hits[0].page_id, (unsigned)hits[1].page_id);
+        free(hits);
+        return 1;
+    }
+    free(hits);
+    hits = NULL;
+    hit_count = 0;
+
+    rc = jh_rank_results(lists, 2, 0, phrase_pages, 1, &hits, &hit_count);
+    if (rc != 0) {
+        fprintf(stderr, "rank_results OR rc=%d\n", rc);
+        return 1;
+    }
+    if (hit_count != 3) {
+        fprintf(stderr, "rank_results OR hit_count=%zu expected 3\n", hit_count);
+        free(hits);
+        return 1;
+    }
+    if (hits[0].page_id != 3) {
+        fprintf(stderr, "rank_results OR top page_id=%u expected 3\n", (unsigned)hits[0].page_id);
+        free(hits);
+        return 1;
+    }
+    free(hits);
+
+    jh_postings_list_free(&a);
+    jh_postings_list_free(&b);
+    return 0;
+}
+
 /* main runs all index_format tests and returns non-zero on failure. */
 int main(void) {
     if (test_postings_cursor_basic() != 0) {
@@ -417,6 +588,12 @@ int main(void) {
         return 1;
     }
     if (test_hash_utf8_basic() != 0) {
+        return 1;
+    }
+    if (test_word_dict_lookup_basic() != 0) {
+        return 1;
+    }
+    if (test_rank_results_basic() != 0) {
         return 1;
     }
     return 0;

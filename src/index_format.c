@@ -1564,7 +1564,7 @@ static int jh_ranked_hit_cmp_desc(const void *a, const void *b) {
     return 0;
 }
 
-int jh_rank_results(const jh_postings_list *lists, size_t list_count, const jh_u32 *phrase_pages, size_t phrase_page_count, jh_ranked_hit **out_hits, size_t *out_hit_count) {
+int jh_rank_results(const jh_postings_list *lists, size_t list_count, int require_all_terms, const jh_u32 *phrase_pages, size_t phrase_page_count, jh_ranked_hit **out_hits, size_t *out_hit_count) {
     size_t i;
     size_t total_docs = 0;
     jh_u32 *pages;
@@ -1575,6 +1575,7 @@ int jh_rank_results(const jh_postings_list *lists, size_t list_count, const jh_u
     const double prox_weight = 2.0;
     const double phrase_weight = 5.0;
     jh_u32 *phrase_sorted = NULL;
+    double *term_weights = NULL;
 
     if (!out_hits || !out_hit_count) {
         return -1;
@@ -1629,11 +1630,27 @@ int jh_rank_results(const jh_postings_list *lists, size_t list_count, const jh_u
         qsort(phrase_sorted, phrase_page_count, sizeof(jh_u32), jh_u32_cmp);
     }
 
+    term_weights = (double *)malloc(sizeof(double) * list_count);
+    if (!term_weights) {
+        free(pages);
+        free(phrase_sorted);
+        return -4;
+    }
+    for (i = 0; i < list_count; ++i) {
+        jh_u32 df = lists[i].entry_count;
+        if (df == 0) {
+            term_weights[i] = 0.0;
+        } else {
+            term_weights[i] = (double)page_count / (double)df;
+        }
+    }
+
     hits = (jh_ranked_hit *)malloc(sizeof(jh_ranked_hit) * page_count);
     if (!hits) {
         free(pages);
         free(phrase_sorted);
-        return -4;
+        free(term_weights);
+        return -5;
     }
 
     for (i = 0; i < page_count; ++i) {
@@ -1642,11 +1659,16 @@ int jh_rank_results(const jh_postings_list *lists, size_t list_count, const jh_u
         double prox_score = 0.0;
         double phrase_score = 0.0;
         size_t t;
+        int has_any = 0;
+        int has_all = 1;
 
         for (t = 0; t < list_count; ++t) {
             jh_posting_entry *pe = jh_find_posting_in_list(&lists[t], d);
             if (pe) {
-                freq_score += (double)pe->term_freq;
+                has_any = 1;
+                freq_score += term_weights[t] * (double)pe->term_freq;
+            } else {
+                has_all = 0;
             }
         }
 
@@ -1699,6 +1721,16 @@ int jh_rank_results(const jh_postings_list *lists, size_t list_count, const jh_u
             }
         }
 
+        if (require_all_terms) {
+            if (!has_all) {
+                continue;
+            }
+        } else {
+            if (!has_any && phrase_score <= 0.0) {
+                continue;
+            }
+        }
+
         if (freq_score > 0.0 || prox_score > 0.0 || phrase_score > 0.0) {
             hits[hits_count].page_id = d;
             hits[hits_count].score = freq_weight * freq_score + prox_weight * prox_score + phrase_score;
@@ -1708,6 +1740,7 @@ int jh_rank_results(const jh_postings_list *lists, size_t list_count, const jh_u
 
     free(pages);
     free(phrase_sorted);
+    free(term_weights);
 
     if (hits_count == 0) {
         free(hits);

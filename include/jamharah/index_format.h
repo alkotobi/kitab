@@ -348,7 +348,7 @@ int jh_postings_phrase_and_cursor_next(jh_postings_phrase_and_cursor *pc, jh_pos
 
 int jh_phrase_search(const char *words_idx_path, const char *postings_path, const jh_u64 *hashes, size_t hash_count, jh_u32 **out_pages, size_t *out_page_count);
 int jh_phrase_search_multi(const char **words_idx_paths, const char **postings_paths, size_t cat_count, const jh_u64 *hashes, size_t hash_count, jh_u32 **out_pages, jh_u32 **out_categories, size_t *out_count);
-int jh_rank_results(const jh_postings_list *lists, size_t list_count, const jh_u32 *phrase_pages, size_t phrase_page_count, jh_ranked_hit **out_hits, size_t *out_hit_count);
+int jh_rank_results(const jh_postings_list *lists, size_t list_count, int require_all_terms, const jh_u32 *phrase_pages, size_t phrase_page_count, jh_ranked_hit **out_hits, size_t *out_hit_count);
 
 typedef struct {
     const jh_u8 *data;

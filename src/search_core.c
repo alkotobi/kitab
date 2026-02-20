@@ -4,9 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static void jh_die_search(const char *msg) {
-    fprintf(stderr, "[search_core] %s\n", msg);
+    fprintf(stderr, "[searcher] %s\n", msg);
     fflush(stderr);
     exit(1);
 }
@@ -56,58 +57,83 @@ static void jh_search_core_run(const char *words_idx_path, const char *postings_
         jh_die_search("alloc hashes or lists failed");
     }
 
-    for (i = 0; i < tok_count; ++i) {
-        hashes[i] = jh_hash_utf8_64(tokens[i].word, tokens[i].length, 0);
-    }
+    {
+        size_t term_count = 0;
+        int has_or_token = 0;
+        int require_all_terms = 1;
 
-    if (tok_count >= 2) {
-        if (jh_phrase_search(words_idx_path, postings_path, hashes, tok_count, &phrase_pages, &phrase_page_count) != 0) {
+        for (i = 0; i < tok_count; ++i) {
+            if (tokens[i].length == 2 &&
+                tokens[i].word[0] == 'O' &&
+                tokens[i].word[1] == 'R') {
+                has_or_token = 1;
+                continue;
+            }
+            hashes[term_count] = jh_hash_utf8_64(tokens[i].word, tokens[i].length, 0);
+            term_count++;
+        }
+
+        if (term_count == 0) {
             free(workspace);
             free(tokens);
             free(hashes);
             free(lists);
-            jh_die_search("phrase_search failed");
+            printf("no tokens\n");
+            return;
         }
-    }
 
-    for (i = 0; i < tok_count; ++i) {
-        if (jh_word_dict_lookup(words_idx_path, hashes[i], &e) != 0) {
-            continue;
+        require_all_terms = has_or_token ? 0 : 1;
+
+        if (term_count >= 2 && !has_or_token) {
+            if (jh_phrase_search(words_idx_path, postings_path, hashes, term_count, &phrase_pages, &phrase_page_count) != 0) {
+                free(workspace);
+                free(tokens);
+                free(hashes);
+                free(lists);
+                jh_die_search("phrase_search failed");
+            }
         }
+
+        for (i = 0; i < term_count; ++i) {
+            if (jh_word_dict_lookup(words_idx_path, hashes[i], &e) != 0) {
+                continue;
+            }
+            {
+                FILE *pf = fopen(postings_path, "rb");
+                if (!pf) {
+                    continue;
+                }
+                fclose(pf);
+                if (e.postings_count == 0) {
+                    continue;
+                }
+                if (jh_postings_list_read(postings_path, e.postings_offset, &lists[i]) != 0) {
+                    continue;
+                }
+            }
+        }
+
+        if (jh_rank_results(lists, term_count, require_all_terms, phrase_pages, phrase_page_count, &hits, &hit_count) != 0) {
+            size_t k;
+            for (k = 0; k < term_count; ++k) {
+                jh_postings_list_free(&lists[k]);
+            }
+            free(workspace);
+            free(tokens);
+            free(hashes);
+            free(lists);
+            free(phrase_pages);
+            jh_die_search("rank_results failed");
+        }
+
         {
-            FILE *pf = fopen(postings_path, "rb");
-            if (!pf) {
-                continue;
-            }
-            fclose(pf);
-            if (e.postings_count == 0) {
-                continue;
-            }
-            if (jh_postings_list_read(postings_path, e.postings_offset, &lists[i]) != 0) {
-                continue;
+            size_t k;
+            for (k = 0; k < term_count; ++k) {
+                jh_postings_list_free(&lists[k]);
             }
         }
     }
 
-    if (jh_rank_results(lists, tok_count, phrase_pages, phrase_page_count, &hits, &hit_count) != 0) {
-        size_t k;
-        for (k = 0; k < tok_count; ++k) {
-            jh_postings_list_free(&lists[k]);
-        }
-        free(workspace);
-        free(tokens);
-        free(hashes);
-        free(lists);
-        free(phrase_pages);
-        jh_die_search("rank_results failed");
-    }
-
-    {
-        size_t k;
-        for (k = 0; k < tok_count; ++k) {
-            jh_postings_list_free(&lists[k]);
-        }
-    }
     free(workspace);
     free(tokens);
     free(hashes);
@@ -204,8 +230,67 @@ static void jh_search_core_run_multi(const char **words_idx_paths, const char **
     free(cats);
 }
 
+static double jh_wall_seconds_search(void) {
+    clock_t t = clock();
+    if (t == (clock_t)-1) {
+        return 0.0;
+    }
+    return (double)t / (double)CLOCKS_PER_SEC;
+}
+
 int main(int argc, char **argv) {
     char buf[4096];
+
+    if (argc >= 2 && strcmp(argv[1], "--bench") == 0) {
+        const char *words_idx_path = "words.idx";
+        const char *postings_path = "postings.bin";
+        const char *queries_path = NULL;
+        FILE *qf;
+        double start;
+        double end;
+        unsigned long count = 0;
+
+        if (argc >= 3) {
+            words_idx_path = argv[2];
+        }
+        if (argc >= 4) {
+            postings_path = argv[3];
+        }
+        if (argc >= 5) {
+            queries_path = argv[4];
+        }
+
+        if (queries_path) {
+            qf = fopen(queries_path, "rb");
+            if (!qf) {
+                jh_die_search("open queries file failed");
+            }
+        } else {
+            qf = stdin;
+        }
+
+        start = jh_wall_seconds_search();
+        while (fgets(buf, sizeof(buf), qf)) {
+            size_t len = strlen(buf);
+            if (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+                buf[len - 1] = 0;
+            }
+            if (buf[0] == 0) {
+                continue;
+            }
+            jh_search_core_run(words_idx_path, postings_path, buf);
+            count += 1;
+        }
+        end = jh_wall_seconds_search();
+        if (qf != stdin) {
+            fclose(qf);
+        }
+        printf("[searcher] bench ran %lu queries in %.3f s (%.3f qps)\n",
+               count,
+               end - start,
+               (end > start && count > 0) ? (double)count / (end - start) : 0.0);
+        return 0;
+    }
 
     if (argc <= 2) {
         const char *words_idx_path = "words.idx";

@@ -34,9 +34,12 @@ add_executable(build_occurrences
     src/build_occurrences.c
 )
 
+find_package(Threads REQUIRED)
+
 target_link_libraries(build_occurrences
     PRIVATE
         jamharah
+        Threads::Threads
 )
 
 add_executable(sort_occurrences
@@ -66,11 +69,11 @@ target_link_libraries(build_words_index
         jamharah
 )
 
-add_executable(search_core
+add_executable(searcher
     src/search_core.c
 )
 
-target_link_libraries(search_core
+target_link_libraries(searcher
     PRIVATE
         jamharah
 )
@@ -84,11 +87,20 @@ target_link_libraries(dump_postings_blocks
         jamharah
 )
 
-add_executable(build_index_pipeline
+add_executable(indexer
     src/build_index_pipeline.c
 )
 
-target_link_libraries(build_index_pipeline
+target_link_libraries(indexer
+    PRIVATE
+        jamharah
+)
+
+add_executable(search_snippets
+    src/search_snippets.c
+)
+
+target_link_libraries(search_snippets
     PRIVATE
         jamharah
 )
