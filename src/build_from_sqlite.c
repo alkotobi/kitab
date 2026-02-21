@@ -24,6 +24,8 @@ typedef struct {
     jh_u32 first_page_id;
     jh_u32 page_count;
     jh_u32 start_page_number;
+    jh_u32 level;
+    jh_u32 sub;
 } jh_chapter_tmp;
 
 /* jh_book_tmp holds per-book summary information while exporting all data. */
@@ -59,6 +61,38 @@ static size_t g_books_cap = 0;
 static jh_title_tmp *g_titles = NULL;
 static size_t g_titles_count = 0;
 static size_t g_titles_cap = 0;
+
+typedef struct {
+    jh_u32 book_id;
+    jh_u32 title_index;
+    jh_u32 category_id;
+    jh_u32 author_id;
+    jh_u32 betaka_index;
+    jh_u32 info_index;
+} jh_book_meta_tmp;
+
+typedef struct {
+    jh_u32 author_id;
+    jh_u32 name_index;
+} jh_author_tmp;
+
+typedef struct {
+    jh_u32 category_id;
+    jh_u32 name_index;
+    jh_u32 parent_id;
+} jh_category_tmp;
+
+static jh_book_meta_tmp *g_book_meta = NULL;
+static size_t g_book_meta_count = 0;
+static size_t g_book_meta_cap = 0;
+
+static jh_author_tmp *g_authors = NULL;
+static size_t g_authors_count = 0;
+static size_t g_authors_cap = 0;
+
+static jh_category_tmp *g_categories = NULL;
+static size_t g_categories_count = 0;
+static size_t g_categories_cap = 0;
 
 static jh_block_index_entry *g_blocks = NULL;
 static size_t g_blocks_count = 0;
@@ -135,6 +169,51 @@ static jh_u32 jh_titles_push(const char *text, jh_u32 flags) {
     g_titles[g_titles_count].text = buf;
     g_titles[g_titles_count].flags = flags;
     return (jh_u32)g_titles_count++;
+}
+
+static jh_book_meta_tmp *jh_book_meta_find(jh_u32 book_id) {
+    size_t i;
+    for (i = 0; i < g_book_meta_count; ++i) {
+        if (g_book_meta[i].book_id == book_id) {
+            return &g_book_meta[i];
+        }
+    }
+    return NULL;
+}
+
+static jh_author_tmp *jh_author_find_or_add(jh_u32 author_id) {
+    size_t i;
+    for (i = 0; i < g_authors_count; ++i) {
+        if (g_authors[i].author_id == author_id) {
+            return &g_authors[i];
+        }
+    }
+    if (g_authors_count == g_authors_cap) {
+        size_t nc = g_authors_cap ? g_authors_cap * 2 : 64;
+        g_authors = (jh_author_tmp *)jh_xrealloc(g_authors, nc, sizeof(jh_author_tmp));
+        g_authors_cap = nc;
+    }
+    g_authors[g_authors_count].author_id = author_id;
+    g_authors[g_authors_count].name_index = 0;
+    return &g_authors[g_authors_count++];
+}
+
+static jh_category_tmp *jh_category_find_or_add(jh_u32 category_id) {
+    size_t i;
+    for (i = 0; i < g_categories_count; ++i) {
+        if (g_categories[i].category_id == category_id) {
+            return &g_categories[i];
+        }
+    }
+    if (g_categories_count == g_categories_cap) {
+        size_t nc = g_categories_cap ? g_categories_cap * 2 : 64;
+        g_categories = (jh_category_tmp *)jh_xrealloc(g_categories, nc, sizeof(jh_category_tmp));
+        g_categories_cap = nc;
+    }
+    g_categories[g_categories_count].category_id = category_id;
+    g_categories[g_categories_count].name_index = 0;
+    g_categories[g_categories_count].parent_id = 0;
+    return &g_categories[g_categories_count++];
 }
 
 /* jh_blocks_push appends a block index entry for books.bin. */
@@ -287,6 +366,8 @@ static void jh_load_titles_for_book(sqlite3 *db, jh_u32 book_id, jh_book_tmp *bo
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         const unsigned char *tit = sqlite3_column_text(st, 0);
         int tit_len = sqlite3_column_bytes(st, 0);
+        int lvl_val = sqlite3_column_int(st, 1);
+        int sub_val = sqlite3_column_int(st, 2);
         int id_val = sqlite3_column_int(st, 3);
         if (!tit || tit_len <= 0) {
             continue;
@@ -307,10 +388,155 @@ static void jh_load_titles_for_book(sqlite3 *db, jh_u32 book_id, jh_book_tmp *bo
         ch->first_page_id = 0;
         ch->page_count = 0;
         ch->start_page_number = (jh_u32)id_val;
+        ch->level = (jh_u32)lvl_val;
+        ch->sub = (jh_u32)sub_val;
     }
     sqlite3_finalize(st);
     book->first_chapter_id = first_chapter_id;
     book->chapter_count = (jh_u32)g_chapters_count - first_chapter_id;
+}
+
+static void jh_load_main_metadata(sqlite3 *db_main) {
+    const char *sql = "SELECT bkid, bk, cat, betaka, inf, authno FROM 0bok";
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db_main, sql, -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        return;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        int bkid_val = sqlite3_column_int(st, 0);
+        const unsigned char *bk = sqlite3_column_text(st, 1);
+        int bk_len = sqlite3_column_bytes(st, 1);
+        int cat_val = sqlite3_column_int(st, 2);
+        const unsigned char *betaka = sqlite3_column_text(st, 3);
+        int betaka_len = sqlite3_column_bytes(st, 3);
+        const unsigned char *inf = sqlite3_column_text(st, 4);
+        int inf_len = sqlite3_column_bytes(st, 4);
+        int authno_val = sqlite3_column_int(st, 5);
+        jh_book_meta_tmp *m;
+        jh_u32 title_index = 0;
+        jh_u32 betaka_index = 0;
+        jh_u32 info_index = 0;
+
+        if (bk && bk_len > 0) {
+            char *buf = (char *)malloc((size_t)bk_len + 1);
+            if (!buf) {
+                jh_die("out of memory");
+            }
+            memcpy(buf, bk, (size_t)bk_len);
+            buf[bk_len] = 0;
+            title_index = jh_titles_push(buf, 1);
+            free(buf);
+        }
+        if (betaka && betaka_len > 0) {
+            char *buf = (char *)malloc((size_t)betaka_len + 1);
+            if (!buf) {
+                jh_die("out of memory");
+            }
+            memcpy(buf, betaka, (size_t)betaka_len);
+            buf[betaka_len] = 0;
+            betaka_index = jh_titles_push(buf, 2);
+            free(buf);
+        }
+        if (inf && inf_len > 0) {
+            char *buf = (char *)malloc((size_t)inf_len + 1);
+            if (!buf) {
+                jh_die("out of memory");
+            }
+            memcpy(buf, inf, (size_t)inf_len);
+            buf[inf_len] = 0;
+            info_index = jh_titles_push(buf, 3);
+            free(buf);
+        }
+
+        if (g_book_meta_count == g_book_meta_cap) {
+            size_t nc = g_book_meta_cap ? g_book_meta_cap * 2 : 64;
+            g_book_meta = (jh_book_meta_tmp *)jh_xrealloc(g_book_meta, nc, sizeof(jh_book_meta_tmp));
+            g_book_meta_cap = nc;
+        }
+        m = &g_book_meta[g_book_meta_count++];
+        m->book_id = (jh_u32)bkid_val;
+        m->title_index = title_index;
+        m->category_id = (jh_u32)cat_val;
+        m->author_id = (jh_u32)authno_val;
+        m->betaka_index = betaka_index;
+        m->info_index = info_index;
+        if (m->category_id != 0) {
+            jh_category_find_or_add(m->category_id);
+        }
+        if (m->author_id != 0) {
+            jh_author_find_or_add(m->author_id);
+        }
+    }
+    sqlite3_finalize(st);
+}
+
+static void jh_load_categories(sqlite3 *db_main) {
+    const char *sql = "SELECT id, cat FROM 0cat";
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db_main, sql, -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        return;
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        int id_val = sqlite3_column_int(st, 0);
+        const unsigned char *cat = sqlite3_column_text(st, 1);
+        int cat_len = sqlite3_column_bytes(st, 1);
+        jh_category_tmp *c;
+        jh_u32 name_index = 0;
+        if (cat && cat_len > 0) {
+            char *buf = (char *)malloc((size_t)cat_len + 1);
+            if (!buf) {
+                jh_die("out of memory");
+            }
+            memcpy(buf, cat, (size_t)cat_len);
+            buf[cat_len] = 0;
+            name_index = jh_titles_push(buf, 4);
+            free(buf);
+        }
+        c = jh_category_find_or_add((jh_u32)id_val);
+        if (name_index != 0) {
+            c->name_index = name_index;
+        }
+    }
+    sqlite3_finalize(st);
+}
+
+static void jh_load_authors(sqlite3 *db_auth) {
+    const char *sql1 = "SELECT authid, auth FROM auth";
+    const char *sql2 = "SELECT authid, auth FROM Auth";
+    const char *sql = sql1;
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(db_auth, sql, -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        sql = sql2;
+        rc = sqlite3_prepare_v2(db_auth, sql, -1, &st, NULL);
+        if (rc != SQLITE_OK) {
+            return;
+        }
+    }
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        int id_val = sqlite3_column_int(st, 0);
+        const unsigned char *name = sqlite3_column_text(st, 1);
+        int name_len = sqlite3_column_bytes(st, 1);
+        jh_author_tmp *a;
+        jh_u32 name_index = 0;
+        if (name && name_len > 0) {
+            char *buf = (char *)malloc((size_t)name_len + 1);
+            if (!buf) {
+                jh_die("out of memory");
+            }
+            memcpy(buf, name, (size_t)name_len);
+            buf[name_len] = 0;
+            name_index = jh_titles_push(buf, 5);
+            free(buf);
+        }
+        a = jh_author_find_or_add((jh_u32)id_val);
+        if (name_index != 0) {
+            a->name_index = name_index;
+        }
+    }
+    sqlite3_finalize(st);
 }
 
 /* jh_process_book_rows groups nass text by page and streams it into books.bin. */
@@ -607,6 +833,8 @@ static void jh_build_and_write_chapters_idx(const char *path) {
         e.first_page_id = ct->first_page_id;
         e.page_count = ct->page_count;
         e.title_index = ct->title_index;
+        e.reserved1 = ct->level;
+        e.reserved2 = ct->sub;
         if (fwrite(&e, 1, sizeof(e), fp) != sizeof(e)) {
             jh_die("write chapters entry failed");
         }
@@ -663,6 +891,129 @@ static void jh_build_and_write_titles_bin(const char *path) {
     fclose(fp);
 }
 
+static void jh_build_and_write_books_meta_idx(const char *path) {
+    FILE *fp = fopen(path, "wb");
+    jh_books_meta_header hdr;
+    jh_u32 i;
+    if (!fp) {
+        return;
+    }
+    memset(&hdr, 0, sizeof(hdr));
+    memcpy(hdr.magic, "BKMT", 4);
+    hdr.version = 1;
+    hdr.book_count = (jh_u32)g_book_meta_count;
+    if (fwrite(&hdr, 1, sizeof(hdr), fp) != sizeof(hdr)) {
+        jh_die("write books_meta header failed");
+    }
+    for (i = 0; i < g_book_meta_count; ++i) {
+        jh_book_meta_tmp *mt = &g_book_meta[i];
+        jh_book_meta_entry e;
+        memset(&e, 0, sizeof(e));
+        e.book_id = mt->book_id;
+        e.category_id = mt->category_id;
+        e.author_id = mt->author_id;
+        e.betaka_index = mt->betaka_index;
+        e.info_index = mt->info_index;
+        e.reserved1 = 0;
+        e.reserved2 = 0;
+        e.reserved3 = 0;
+        if (fwrite(&e, 1, sizeof(e), fp) != sizeof(e)) {
+            jh_die("write books_meta entry failed");
+        }
+    }
+    fclose(fp);
+}
+
+static void jh_build_and_write_authors_idx(const char *path) {
+    FILE *fp = fopen(path, "wb");
+    jh_authors_index_header hdr;
+    jh_u32 i;
+    if (!fp) {
+        return;
+    }
+    memset(&hdr, 0, sizeof(hdr));
+    memcpy(hdr.magic, "AUTH", 4);
+    hdr.version = 1;
+    hdr.author_count = (jh_u32)g_authors_count;
+    if (fwrite(&hdr, 1, sizeof(hdr), fp) != sizeof(hdr)) {
+        jh_die("write authors header failed");
+    }
+    for (i = 0; i < g_authors_count; ++i) {
+        jh_author_tmp *at = &g_authors[i];
+        jh_author_index_entry e;
+        memset(&e, 0, sizeof(e));
+        e.author_id = at->author_id;
+        e.name_index = at->name_index;
+        e.reserved1 = 0;
+        e.reserved2 = 0;
+        if (fwrite(&e, 1, sizeof(e), fp) != sizeof(e)) {
+            jh_die("write authors entry failed");
+        }
+    }
+    fclose(fp);
+}
+
+static void jh_build_and_write_categories_idx(const char *path) {
+    FILE *fp = fopen(path, "wb");
+    jh_categories_index_header hdr;
+    jh_u32 i;
+    if (!fp) {
+        return;
+    }
+    memset(&hdr, 0, sizeof(hdr));
+    memcpy(hdr.magic, "CATG", 4);
+    hdr.version = 1;
+    hdr.category_count = (jh_u32)g_categories_count;
+    if (fwrite(&hdr, 1, sizeof(hdr), fp) != sizeof(hdr)) {
+        jh_die("write categories header failed");
+    }
+    for (i = 0; i < g_categories_count; ++i) {
+        jh_category_tmp *ct = &g_categories[i];
+        jh_category_index_entry e;
+        memset(&e, 0, sizeof(e));
+        e.category_id = ct->category_id;
+        e.name_index = ct->name_index;
+        e.parent_id = ct->parent_id;
+        e.reserved1 = 0;
+        if (fwrite(&e, 1, sizeof(e), fp) != sizeof(e)) {
+            jh_die("write categories entry failed");
+        }
+    }
+    fclose(fp);
+}
+
+static void jh_build_and_write_book_authors_idx(const char *path) {
+    FILE *fp = fopen(path, "wb");
+    jh_book_authors_header hdr;
+    jh_u32 i;
+    if (!fp) {
+        return;
+    }
+    memset(&hdr, 0, sizeof(hdr));
+    memcpy(hdr.magic, "BKAU", 4);
+    hdr.version = 1;
+    hdr.entry_count = (jh_u32)g_book_meta_count;
+    if (fwrite(&hdr, 1, sizeof(hdr), fp) != sizeof(hdr)) {
+        jh_die("write book_authors header failed");
+    }
+    for (i = 0; i < g_book_meta_count; ++i) {
+        jh_book_meta_tmp *mt = &g_book_meta[i];
+        if (mt->author_id == 0) {
+            continue;
+        }
+        jh_book_author_entry e;
+        memset(&e, 0, sizeof(e));
+        e.book_id = mt->book_id;
+        e.author_id = mt->author_id;
+        e.role = 0;
+        e.order = 0;
+        if (fwrite(&e, 1, sizeof(e), fp) != sizeof(e)) {
+            jh_die("write book_authors entry failed");
+        }
+    }
+    fclose(fp);
+}
+
 /* main exports all SQLite book databases under the books directory to static binary files. */
 int main(int argc, char **argv) {
     const char *books_dir = "books";
@@ -674,6 +1025,21 @@ int main(int argc, char **argv) {
     }
     if (sqlite3_initialize() != SQLITE_OK) {
         jh_die("sqlite3_initialize failed");
+    }
+    {
+        sqlite3 *db_main = NULL;
+        if (sqlite3_open_v2("main.sqlite", &db_main, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            jh_load_main_metadata(db_main);
+            jh_load_categories(db_main);
+            sqlite3_close(db_main);
+        }
+    }
+    {
+        sqlite3 *db_auth = NULL;
+        if (sqlite3_open_v2("special.sqlite", &db_auth, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            jh_load_authors(db_auth);
+            sqlite3_close(db_auth);
+        }
     }
     files = jh_scan_books_dir(books_dir, &file_count);
     jh_write_books_bin("books.bin");
@@ -693,7 +1059,10 @@ int main(int argc, char **argv) {
         book->chapter_count = 0;
         book->text_start_offset = 0;
         book->text_end_offset = 0;
-        book->title_index = 0;
+        {
+            jh_book_meta_tmp *m = jh_book_meta_find(files[i].book_id);
+            book->title_index = m ? m->title_index : 0;
+        }
         jh_load_titles_for_book(db, files[i].book_id, book);
         jh_process_book_rows(db, files[i].book_id, book);
         sqlite3_close(db);
@@ -704,6 +1073,10 @@ int main(int argc, char **argv) {
     jh_build_and_write_books_idx("books.idx");
     jh_build_and_write_chapters_idx("chapters.idx");
     jh_build_and_write_titles_bin("titles.bin");
+    jh_build_and_write_books_meta_idx("books_meta.idx");
+    jh_build_and_write_authors_idx("authors.idx");
+    jh_build_and_write_categories_idx("categories.idx");
+    jh_build_and_write_book_authors_idx("book_authors.idx");
     for (i = 0; i < file_count; ++i) {
         free(files[i].path);
     }

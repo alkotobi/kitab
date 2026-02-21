@@ -26,4 +26,6 @@ size_t jh_normalize_and_tokenize_arabic_utf8(const char *text, size_t text_len,
                                              jh_token *tokens, size_t max_tokens,
                                              char *workspace, size_t workspace_cap);
 
+void jh_light_stem_arabic_tokens(jh_token *tokens, size_t token_count);
+
 #endif

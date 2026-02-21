@@ -9,6 +9,7 @@ add_library(jamharah STATIC
     src/index_format.c
     src/normalize_arabic.c
     src/tokenize_arabic.c
+    src/arabic_stem.c
     src/hash.c
 )
 

@@ -17,7 +17,8 @@ static void jh_run_search_and_snippets(const char *books_path,
                                        const char *postings_path,
                                        const char *query,
                                        size_t offset,
-                                       size_t limit) {
+                                       size_t limit,
+                                       int exact_only) {
     size_t qlen = strlen(query);
     size_t workspace_cap = qlen ? qlen * 4 : 16;
     char *workspace = (char *)malloc(workspace_cap);
@@ -252,9 +253,123 @@ static void jh_run_search_and_snippets(const char *books_path,
             }
 
             if (!found) {
-                printf("book %u page %u id %u score %.6f\n",
-                       book_id, page_number, page_id, score);
-                printf("  [no exact raw query match in page text]\n");
+                int boundary_found = 0;
+                jh_u32 next_page_id = page_id + 1;
+                if (next_page_id < ph.page_count && page_by_id) {
+                    jh_page_index_entry *pe1 = &page_by_id[page_id];
+                    jh_page_index_entry *pe2 = &page_by_id[next_page_id];
+                    if (pe1->book_id == pe2->book_id) {
+                        char *next_page_text = NULL;
+                        jh_u32 next_page_len = 0;
+                        if (jh_load_page_text(books_path, pages_idx_path,
+                                              next_page_id, &next_page_text, &next_page_len) == 0) {
+                            size_t tail_bytes = page_len > 200 ? 200 : page_len;
+                            size_t head_bytes = next_page_len > 200 ? 200 : next_page_len;
+                            size_t combo_len = tail_bytes + head_bytes;
+                            char *combo = (char *)malloc(combo_len);
+                            if (combo) {
+                                size_t cpos = 0;
+                                memcpy(combo, page_text + (page_len - tail_bytes), tail_bytes);
+                                memcpy(combo + tail_bytes, next_page_text, head_bytes);
+                                while (cpos + qlen2 <= combo_len) {
+                                    if (memcmp(combo + cpos, query, qlen2) == 0) {
+                                        const char *f2 = combo + cpos;
+                                        size_t start2 = (size_t)(f2 - combo);
+                                        size_t head_len2 = start2 > 40 ? 40 : start2;
+                                        size_t tail_len2 = (combo_len - (start2 + qlen2)) > 40 ?
+                                                           40 : (combo_len - (start2 + qlen2));
+                                        printf("book %u pages %u-%u ids %u-%u score %.6f\n",
+                                               book_id, pe1->page_number, pe2->page_number,
+                                               page_id, next_page_id, score);
+                                        printf("  ...%.*s«", (int)head_len2, combo + start2 - head_len2);
+                                        printf("%.*s", (int)qlen2, combo + start2);
+                                        printf("»%.*s...\n", (int)tail_len2, combo + start2 + qlen2);
+                                        boundary_found = 1;
+                                        break;
+                                    }
+                                    cpos++;
+                                }
+                                free(combo);
+                            }
+                            free(next_page_text);
+                        }
+                    }
+                }
+
+                if (!boundary_found) {
+                    if (!exact_only) {
+                        size_t page_snippet_len = page_len > 80 ? 80 : page_len;
+                        char *q_ws = NULL;
+                        jh_token *q_tokens = NULL;
+                        size_t q_ws_cap = qlen2 ? qlen2 * 4 : 16;
+                        size_t q_tok_cap = qlen2 ? qlen2 : 16;
+                        char *p_ws = NULL;
+                        jh_token *p_tokens = NULL;
+                        size_t p_ws_cap = page_len ? page_len * 4 : 16;
+                        size_t p_tok_cap = page_len ? page_len : 16;
+                        size_t q_tok_count = 0;
+                        size_t p_tok_count = 0;
+                        int root_found = 0;
+                        size_t root_start = 0;
+                        size_t root_len = 0;
+                        size_t norm_len = 0;
+
+                        q_ws = (char *)malloc(q_ws_cap);
+                        q_tokens = (jh_token *)malloc(sizeof(jh_token) * q_tok_cap);
+                        p_ws = (char *)malloc(p_ws_cap);
+                        p_tokens = (jh_token *)malloc(sizeof(jh_token) * p_tok_cap);
+
+                        if (q_ws && q_tokens) {
+                            q_tok_count = jh_normalize_and_tokenize_arabic_utf8(query, qlen2,
+                                                                                q_tokens, q_tok_cap,
+                                                                                q_ws, q_ws_cap);
+                        }
+                        if (p_ws && p_tokens) {
+                            p_tok_count = jh_normalize_and_tokenize_arabic_utf8(page_text, page_len,
+                                                                                p_tokens, p_tok_cap,
+                                                                                p_ws, p_ws_cap);
+                        }
+
+                        if (q_tok_count != (size_t)-1 && p_tok_count != (size_t)-1 &&
+                            q_tok_count > 0 && p_tok_count > 0 &&
+                            q_ws && p_ws && q_tokens && p_tokens) {
+                            size_t ti;
+                            size_t qi;
+                            norm_len = (size_t)((p_tokens[p_tok_count - 1].word - p_ws) +
+                                                p_tokens[p_tok_count - 1].length);
+                            for (ti = 0; ti < p_tok_count && !root_found; ++ti) {
+                                for (qi = 0; qi < q_tok_count; ++qi) {
+                                    if (q_tokens[qi].length == p_tokens[ti].length &&
+                                        memcmp(q_tokens[qi].word, p_tokens[ti].word, q_tokens[qi].length) == 0) {
+                                        root_found = 1;
+                                        root_start = (size_t)(p_tokens[ti].word - p_ws);
+                                        root_len = p_tokens[ti].length;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        printf("book %u page %u id %u score %.6f\n",
+                               book_id, page_number, page_id, score);
+
+                        if (root_found && norm_len > 0 && root_len > 0 && root_start < norm_len) {
+                            size_t head_len_r = root_start > 40 ? 40 : root_start;
+                            size_t tail_len_r = (norm_len - (root_start + root_len)) > 40 ?
+                                                40 : (norm_len - (root_start + root_len));
+                            printf("  ...%.*s«", (int)head_len_r, p_ws + root_start - head_len_r);
+                            printf("%.*s", (int)root_len, p_ws + root_start);
+                            printf("»%.*s...\n", (int)tail_len_r, p_ws + root_start + root_len);
+                        } else {
+                            printf("  ...%.*s...\n", (int)page_snippet_len, page_text);
+                        }
+
+                        free(q_ws);
+                        free(q_tokens);
+                        free(p_ws);
+                        free(p_tokens);
+                    }
+                }
                 free(page_text);
                 continue;
             }
@@ -267,9 +382,9 @@ static void jh_run_search_and_snippets(const char *books_path,
 
             printf("book %u page %u id %u score %.6f\n",
                    book_id, page_number, page_id, score);
-            printf("  ...%.*s[", (int)head_len, page_text + start - head_len);
+            printf("  ...%.*s«", (int)head_len, page_text + start - head_len);
             printf("%.*s", (int)qlen2, page_text + start);
-            printf("]%.*s...\n", (int)tail_len, page_text + start + qlen2);
+            printf("»%.*s...\n", (int)tail_len, page_text + start + qlen2);
 
             free(page_text);
         }
@@ -283,10 +398,11 @@ int main(int argc, char **argv) {
     const char *pages_idx_path = "pages.idx";
     const char *words_idx_path = "words.idx";
     const char *postings_path = "postings.bin";
-        char buf[4096];
-        size_t offset = 0;
-        size_t limit = 0;
-        char *endp;
+    char buf[4096];
+    size_t offset = 0;
+    size_t limit = 0;
+    int exact_only = 0;
+    char *endp;
 
     if (argc >= 2) {
         books_path = argv[1];
@@ -312,6 +428,11 @@ int main(int argc, char **argv) {
             limit = (size_t)v;
         }
     }
+    if (argc >= 8) {
+        if (strcmp(argv[7], "--exact") == 0) {
+            exact_only = 1;
+        }
+    }
 
     if (!fgets(buf, sizeof(buf), stdin)) {
         return 0;
@@ -329,6 +450,7 @@ int main(int argc, char **argv) {
                                postings_path,
                                buf,
                                offset,
-                               limit);
+                               limit,
+                               exact_only);
     return 0;
 }

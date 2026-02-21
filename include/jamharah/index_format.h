@@ -97,6 +97,70 @@ typedef struct {
     jh_u32 reserved2;
 } jh_chapter_index_entry;
 
+typedef struct {
+    char magic[4];
+    jh_u32 version;
+    jh_u32 book_count;
+    jh_u32 reserved;
+    jh_u64 reserved2;
+} jh_books_meta_header;
+
+typedef struct {
+    jh_u32 book_id;
+    jh_u32 category_id;
+    jh_u32 author_id;
+    jh_u32 betaka_index;
+    jh_u32 info_index;
+    jh_u32 reserved1;
+    jh_u32 reserved2;
+    jh_u32 reserved3;
+} jh_book_meta_entry;
+
+typedef struct {
+    char magic[4];
+    jh_u32 version;
+    jh_u32 author_count;
+    jh_u32 reserved;
+    jh_u64 reserved2;
+} jh_authors_index_header;
+
+typedef struct {
+    jh_u32 author_id;
+    jh_u32 name_index;
+    jh_u32 reserved1;
+    jh_u32 reserved2;
+} jh_author_index_entry;
+
+typedef struct {
+    char magic[4];
+    jh_u32 version;
+    jh_u32 category_count;
+    jh_u32 reserved;
+    jh_u64 reserved2;
+} jh_categories_index_header;
+
+typedef struct {
+    jh_u32 category_id;
+    jh_u32 name_index;
+    jh_u32 parent_id;
+    jh_u32 reserved1;
+} jh_category_index_entry;
+
+typedef struct {
+    char magic[4];
+    jh_u32 version;
+    jh_u32 entry_count;
+    jh_u32 reserved;
+    jh_u64 reserved2;
+} jh_book_authors_header;
+
+typedef struct {
+    jh_u32 book_id;
+    jh_u32 author_id;
+    jh_u32 role;
+    jh_u32 order;
+} jh_book_author_entry;
+
 /* jh_titles_file_header is the header for the packed titles file titles.bin. */
 typedef struct {
     char magic[4];
